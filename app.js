@@ -245,16 +245,23 @@ function storeProxyState(enabled) {
 }
 
 function postToServiceWorker(message) {
+    if (!('serviceWorker' in navigator)) {
+        console.warn('Service worker unavailable; skipping message:', message?.type);
+        return false;
+    }
+
     if (navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage(message);
-        return;
+        return true;
     }
 
     navigator.serviceWorker.ready.then((registration) => {
         registration.active?.postMessage(message);
     }).catch(() => {
-        // Ignore service worker messaging failures.
+        console.warn('Service worker ready promise rejected for message:', message?.type);
     });
+
+    return true;
 }
 
 function syncProxyStateToServiceWorker() {
@@ -297,7 +304,7 @@ function serializeResponseForServiceWorker(response) {
 }
 
 async function sendResponseToServiceWorker(requestId, responsePayload) {
-    postToServiceWorker({
+    return postToServiceWorker({
         type: 'BRIDGE_PROXY_RESPONSE',
         requestId,
         response: responsePayload
@@ -395,13 +402,18 @@ async function handleSocketProxyResponse(payload) {
         return;
     }
 
-    await sendResponseToServiceWorker(payload.requestId, payload.response || {
+    const responsePayload = payload.response || {
         ok: false,
         status: 500,
         statusText: 'Bridge response missing',
         headers: { 'content-type': 'text/plain' },
         bodyText: 'Bridge response payload missing.'
-    });
+    };
+
+    const didSend = await sendResponseToServiceWorker(payload.requestId, responsePayload);
+    if (!didSend) {
+        logSocket(`⚠️ Bridge response received for request ${payload.requestId}, but no active service worker is available.`);
+    }
 }
 
 function getBridgeRoomInput() {
@@ -515,6 +527,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
 function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) {
+        document.getElementById('swStatus').innerText = 'Service worker: unsupported';
         return;
     }
 
