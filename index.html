@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#081018">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Data Bridge">
+  <meta name="description" content="Local-first PWA for offline data sync and device bridging over hotspot or local network.">
+  <title>Data Bridge</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='120' fill='%23050b12'/%3E%3Cpath d='M96 256h320M256 96v320' stroke='%2369f0c2' stroke-width='34' stroke-linecap='round'/%3E%3Ccircle cx='256' cy='256' r='116' fill='none' stroke='%23f5f7fa' stroke-width='22'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Crect width='256' height='256' rx='56' fill='%23081018'/%3E%3Cpath d='M48 128h160M128 48v160' stroke='%2369f0c2' stroke-width='20' stroke-linecap='round'/%3E%3Ccircle cx='128' cy='128' r='56' fill='none' stroke='%23f5f7fa' stroke-width='14'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+  <div class="background-grid" aria-hidden="true"></div>
+  <div class="background-glow background-glow-left" aria-hidden="true"></div>
+  <div class="background-glow background-glow-right" aria-hidden="true"></div>
+
+  <main class="shell">
+    <header class="topbar card">
+      <div>
+        <p class="eyebrow">Local-first sync bridge</p>
+        <h1>Data Bridge</h1>
+        <p class="lead">
+          Installable PWA for offline data transfer, hotspot pairing, and device-to-device sync without requiring active internet.
+        </p>
+      </div>
+      <div class="status-cluster">
+        <div class="status-pill" id="swStatus">Service worker: pending</div>
+        <div class="status-pill" id="netStatus">Network: checking</div>
+        <div class="status-pill" id="bridgeStatus">Bridge: idle</div>
+        <button class="status-action" id="installBtn" type="button" hidden>Install app</button>
+      </div>
+    </header>
+
+    <section class="qr-banner card">
+      <div class="qr-container">
+        <div class="qr-content">
+          <div>
+            <p class="qr-label">Quick Connect</p>
+            <p class="qr-text">Scan with your phone to join this bridge</p>
+            <p class="qr-url" id="connectionUrl">Loading connection info...</p>
+          </div>
+          <div id="qrcode" class="qr-display"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">Sync Console</p>
+            <h2>Offline data queue</h2>
+          </div>
+          <button class="button button-secondary" id="refreshCacheBtn" type="button">Refresh cache</button>
+        </div>
+
+        <div class="queue" id="offline-queue-list" aria-live="polite"></div>
+
+        <form id="queueForm" class="queue-form">
+          <label>
+            <span>Payload</span>
+            <textarea id="payload-input" rows="4" placeholder='{"type":"contacts","items":12}'></textarea>
+          </label>
+          <div class="inline-actions">
+            <button class="button" type="button" id="add-to-queue">Add to queue</button>
+            <button class="button button-secondary" type="button" id="flush-queue">Flush queue</button>
+          </div>
+        </form>
+      </article>
+
+      <article class="card panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">Bridge Layer</p>
+            <h2>WebRTC or local socket</h2>
+          </div>
+        </div>
+
+        <div class="mode-switch" role="tablist" aria-label="Bridge mode">
+          <button class="mode-button is-active" type="button" data-mode="webrtc" role="tab" aria-selected="true">WebRTC</button>
+          <button class="mode-button" type="button" data-mode="socket" role="tab" aria-selected="false">Local socket</button>
+        </div>
+
+        <div class="bridge-section" data-panel="webrtc">
+          <p class="section-copy">
+            Manual signaling works well on a laptop and phone connected to the same hotspot. Exchange the generated offer and answer text blocks by copy/paste or QR in your next iteration.
+          </p>
+          <div class="bridge-actions">
+            <button class="button" type="button" id="createOfferBtn">Create offer</button>
+            <button class="button button-secondary" type="button" id="acceptOfferBtn">Accept remote offer</button>
+          </div>
+          <label>
+            <span>Local offer / answer</span>
+            <textarea id="signalingOutput" rows="7" readonly></textarea>
+          </label>
+          <label>
+            <span>Remote offer / answer</span>
+            <textarea id="signalingInput" rows="7" placeholder='Paste the remote session description here'></textarea>
+          </label>
+          <div class="inline-actions">
+            <button class="button button-secondary" type="button" id="copySignalBtn">Copy local signal</button>
+            <button class="button button-secondary" type="button" id="resetPeerBtn">Reset peer</button>
+          </div>
+        </div>
+
+        <div class="bridge-section" data-panel="socket">
+          <p class="section-copy">
+            Boilerplate for a local network socket. Point this at a phone-hosted endpoint or a small LAN relay once the Android side is ready.
+          </p>
+          <p class="section-copy" id="socketConfigStatus" aria-live="polite"></p>
+          <label>
+            <span>Socket endpoint</span>
+            <input id="socketUrlInput" type="url" placeholder="ws://192.168.43.1:8080">
+          </label>
+          <div class="bridge-actions">
+            <button class="button" type="button" id="local-socket-btn">Connect socket</button>
+            <button class="button button-secondary" type="button" id="disconnectSocketBtn">Disconnect</button>
+            <button class="button button-secondary" type="button" id="seedSocketBtn">Use hotspot defaults</button>
+          </div>
+          <label>
+            <span>Socket log</span>
+            <textarea id="socketLog" rows="7" readonly></textarea>
+          </label>
+        </div>
+      </article>
+
+      <article class="card panel wide-panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">Telemetry</p>
+            <h2>Runtime state</h2>
+          </div>
+        </div>
+        <div class="metrics">
+          <div class="metric">
+            <span>Queued items</span>
+            <strong id="queued-count">0</strong>
+          </div>
+          <div class="metric">
+            <span>Peer state</span>
+            <strong id="peerState">new</strong>
+          </div>
+          <div class="metric">
+            <span>Socket state</span>
+            <strong id="socketState">closed</strong>
+          </div>
+          <div class="metric">
+            <span>Offline</span>
+            <strong id="offlineState">false</strong>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <template id="queueItemTemplate">
+    <div class="queue-item">
+      <div>
+        <h3></h3>
+        <p></p>
+      </div>
+      <div class="queue-meta"></div>
+    </div>
+  </template>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

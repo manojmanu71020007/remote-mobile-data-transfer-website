@@ -1,0 +1,24 @@
+{
+  "name": "data-bridge-server",
+  "version": "1.0.0",
+  "description": "Local-first PWA server with CORS for offline mobile data sync",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "pwa",
+    "offline",
+    "hotspot",
+    "webrtc",
+    "data-bridge"
+  ],
+  "author": "Data Bridge",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "ws": "^8.20.1"
+  }
+}
