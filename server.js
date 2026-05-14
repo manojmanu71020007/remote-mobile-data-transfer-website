@@ -66,7 +66,7 @@ async function connectMongo() {
 
     try {
         await mongoose.connect(mongoUri);
-        console.log('✅ MongoDB connected. MongoDB logging: enabled');
+        console.log('Connected to MongoDB Atlas');
     } catch (error) {
         console.error(`❌ MongoDB connection failed: ${error.message}`);
         console.warn('MongoDB logging: disabled');
@@ -118,6 +118,7 @@ wss.on('connection', (ws) => {
     console.log(`[${new Date().toLocaleTimeString()}] New device connected.`);
     console.log(`Total clients: ${wss.clients.size}`);
     ws.roomId = null;
+    ws.roomKey = null;
 
     ws.on('message', async (data) => {
         const message = data.toString();
@@ -151,6 +152,7 @@ wss.on('connection', (ws) => {
 
             leaveRoom(ws);
             ws.roomId = roomId;
+            ws.roomKey = roomId;
             getRoomClients(roomId).add(ws);
 
             sendJson(ws, {
@@ -177,8 +179,8 @@ wss.on('connection', (ws) => {
         if (mongoose.connection.readyState === 1) {
             try {
                 const newLog = new BridgeLog({
-                    room_id: ws.roomId,
-                    sender: typeof payload.sender === 'string' ? payload.sender : (payload.clientId || 'unknown'),
+                    room_id: ws.roomKey,
+                    sender: 'mobile_device',
                     payload
                 });
                 await newLog.save();
