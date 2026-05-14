@@ -119,6 +119,21 @@ function findRoomClientByRole(roomId, role) {
     return null;
 }
 
+function findRoomClientByClientId(roomId, clientId) {
+    const roomClients = clientsByRoom.get(roomId);
+    if (!roomClients || !clientId) {
+        return null;
+    }
+
+    for (const client of roomClients) {
+        if (client.readyState === WebSocket.OPEN && client.clientId === clientId) {
+            return client;
+        }
+    }
+
+    return null;
+}
+
 function calculateDataBytes(payload) {
     if (payload.type === 'FETCH_RESPONSE' && payload.response) {
         const res = payload.response;
