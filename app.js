@@ -4,8 +4,13 @@ let peerConnection = null;
 let socket = null;
 let clientId = null;
 let bridgeRoomId = '';
+let proxyEnabled = false;
+let serviceWorkerRegistration = null;
+const isLikelyMobileDevice = window.matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
+let deviceRole = isLikelyMobileDevice ? 'provider' : 'receiver';
 const FALLBACK_IP = "10.98.169.218"; // Your laptop's hotspot IP
 const BRIDGE_KEY_STORAGE = 'data-bridge-room-id';
+const PROXY_STATE_STORAGE = 'data-bridge-proxy-enabled';
 const STUN_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
@@ -17,6 +22,65 @@ function createClientId() {
     }
 
     return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 0x8000;
+
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    }
+
+    return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+
+    return bytes.buffer;
+}
+
+function headersToObject(headers) {
+    const result = {};
+    if (!headers) {
+        return result;
+    }
+
+    if (headers instanceof Headers) {
+        headers.forEach((value, key) => {
+            result[key] = value;
+        });
+        return result;
+    }
+
+    Object.entries(headers).forEach(([key, value]) => {
+        result[key] = value;
+    });
+
+    return result;
+}
+
+function objectToHeaders(headerObject = {}) {
+    const headers = new Headers();
+    Object.entries(headerObject).forEach(([key, value]) => {
+        if (Array.isArray(value)) {
+            value.forEach((entry) => headers.append(key, String(entry)));
+            return;
+        }
+
+        if (value !== undefined && value !== null) {
+            headers.set(key, String(value));
+        }
+    });
+
+    return headers;
 }
 
 function getLocalSocketUrl() {
@@ -147,6 +211,199 @@ function renderBridgeShareInfo() {
     }
 }
 
+function getProxyStatusText() {
+    return proxyEnabled ? 'Proxy: on' : 'Proxy: off';
+}
+
+function updateProxyUi() {
+    const proxyToggleBtn = document.getElementById('proxyToggleBtn');
+    const proxyStatus = document.getElementById('proxyStatus');
+
+    if (proxyToggleBtn) {
+        proxyToggleBtn.textContent = proxyEnabled ? 'Proxy ON' : 'Proxy OFF';
+    }
+
+    if (proxyStatus) {
+        proxyStatus.textContent = `${getProxyStatusText()} | Device role: ${deviceRole}`;
+    }
+}
+
+function loadStoredProxyState() {
+    try {
+        return window.localStorage.getItem(PROXY_STATE_STORAGE) === 'true';
+    } catch (error) {
+        return false;
+    }
+}
+
+function storeProxyState(enabled) {
+    try {
+        window.localStorage.setItem(PROXY_STATE_STORAGE, String(enabled));
+    } catch (error) {
+        // Ignore storage failures.
+    }
+}
+
+function postToServiceWorker(message) {
+    if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage(message);
+        return;
+    }
+
+    navigator.serviceWorker.ready.then((registration) => {
+        registration.active?.postMessage(message);
+    }).catch(() => {
+        // Ignore service worker messaging failures.
+    });
+}
+
+function syncProxyStateToServiceWorker() {
+    postToServiceWorker({
+        type: 'PROXY_STATE',
+        enabled: proxyEnabled,
+        clientId
+    });
+}
+
+function setDeviceRole(role) {
+    deviceRole = role === 'provider' ? 'provider' : 'receiver';
+    updateProxyUi();
+    sendRoleStateToServer();
+}
+
+function sendRoleStateToServer() {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        sendSocketEvent('bridge:role', { role: deviceRole });
+    }
+}
+
+function toggleProxy() {
+    proxyEnabled = !proxyEnabled;
+    storeProxyState(proxyEnabled);
+    updateProxyUi();
+    syncProxyStateToServiceWorker();
+    sendRoleStateToServer();
+    logSocket(proxyEnabled ? 'Proxy enabled' : 'Proxy disabled');
+}
+
+function serializeResponseForServiceWorker(response) {
+    return {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        headers: headersToObject(response.headers),
+        bodyBase64: null
+    };
+}
+
+async function sendResponseToServiceWorker(requestId, responsePayload) {
+    postToServiceWorker({
+        type: 'BRIDGE_PROXY_RESPONSE',
+        requestId,
+        response: responsePayload
+    });
+}
+
+async function handleServiceWorkerProxyRequest(payload) {
+    if (!proxyEnabled || socket?.readyState !== WebSocket.OPEN) {
+        await sendResponseToServiceWorker(payload.requestId, {
+            ok: false,
+            status: 503,
+            statusText: 'Proxy unavailable',
+            headers: { 'content-type': 'text/plain' },
+            bodyText: 'Bridge proxy is not active.'
+        });
+        return;
+    }
+
+    sendSocketEvent('FETCH_REQUEST', {
+        requestId: payload.requestId,
+        requesterClientId: clientId,
+        request: payload.request,
+        sender: deviceRole,
+        targetRole: 'provider'
+    });
+}
+
+async function handleProviderFetchRequest(payload) {
+    const request = payload.request || {};
+    const requestUrl = request.url;
+
+    if (!requestUrl) {
+        sendSocketEvent('FETCH_RESPONSE', {
+            requestId: payload.requestId,
+            requesterClientId: payload.requesterClientId || payload.clientId,
+            response: {
+                ok: false,
+                status: 400,
+                statusText: 'Bad Request',
+                headers: { 'content-type': 'text/plain' },
+                bodyText: 'Missing URL for fetch request.'
+            }
+        });
+        return;
+    }
+
+    try {
+        const fetchOptions = {
+            method: request.method || 'GET',
+            headers: request.headers ? objectToHeaders(request.headers) : undefined,
+            mode: request.mode || 'cors',
+            credentials: request.credentials || 'include',
+            cache: request.cache || 'no-store',
+            redirect: request.redirect || 'follow',
+            referrer: request.referrer || undefined
+        };
+
+        if (request.bodyBase64) {
+            fetchOptions.body = base64ToArrayBuffer(request.bodyBase64);
+        }
+
+        const response = await fetch(requestUrl, fetchOptions);
+        const responseBody = await response.arrayBuffer();
+
+        sendSocketEvent('FETCH_RESPONSE', {
+            requestId: payload.requestId,
+            requesterClientId: payload.requesterClientId || payload.clientId,
+            response: {
+                ok: response.ok,
+                status: response.status,
+                statusText: response.statusText,
+                headers: headersToObject(response.headers),
+                bodyBase64: arrayBufferToBase64(responseBody)
+            }
+        });
+        logSocket(`🌐 Proxied fetch: ${requestUrl}`);
+    } catch (error) {
+        console.error('Provider fetch failed:', error);
+        sendSocketEvent('FETCH_RESPONSE', {
+            requestId: payload.requestId,
+            requesterClientId: payload.requesterClientId || payload.clientId,
+            response: {
+                ok: false,
+                status: 502,
+                statusText: 'Bad Gateway',
+                headers: { 'content-type': 'text/plain' },
+                bodyText: error.message || 'Provider fetch failed.'
+            }
+        });
+    }
+}
+
+async function handleSocketProxyResponse(payload) {
+    if (!payload?.requestId) {
+        return;
+    }
+
+    await sendResponseToServiceWorker(payload.requestId, payload.response || {
+        ok: false,
+        status: 500,
+        statusText: 'Bridge response missing',
+        headers: { 'content-type': 'text/plain' },
+        bodyText: 'Bridge response payload missing.'
+    });
+}
+
 function getBridgeRoomInput() {
     return document.getElementById('bridgeKeyInput');
 }
@@ -242,16 +499,50 @@ function getQueueTimestamp(item) {
 window.addEventListener('DOMContentLoaded', () => {
     console.log("App initialized. UI Unlocked.");
     clientId = createClientId();
+    proxyEnabled = loadStoredProxyState();
     const bridgeRoomInput = getBridgeRoomInput();
     if (bridgeRoomInput) {
         bridgeRoomInput.value = loadStoredBridgeRoomId();
     }
     setBridgeConnectionState('Bridge: idle');
+    updateProxyUi();
+    registerServiceWorker();
     setupEventListeners();
     renderBridgeShareInfo();
     renderQueue();
     updateNetworkStatus();
 });
+
+function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) {
+        return;
+    }
+
+    navigator.serviceWorker.register('./sw.js')
+        .then((registration) => {
+            serviceWorkerRegistration = registration;
+            document.getElementById('swStatus').innerText = 'Service worker: active';
+            navigator.serviceWorker.addEventListener('message', async (event) => {
+                const data = event.data || {};
+
+                if (data.type === 'BRIDGE_PROXY_REQUEST') {
+                    await handleServiceWorkerProxyRequest(data);
+                    return;
+                }
+
+                if (data.type === 'BRIDGE_PROXY_RESPONSE') {
+                    await handleSocketProxyResponse(data);
+                    return;
+                }
+            });
+
+            syncProxyStateToServiceWorker();
+        })
+        .catch((error) => {
+            console.error('Service worker registration failed:', error);
+            document.getElementById('swStatus').innerText = 'Service worker: error';
+        });
+}
 
 // 3. Robust Event Listeners
 function setupEventListeners() {
@@ -261,6 +552,7 @@ function setupEventListeners() {
     const refreshCacheBtn = document.getElementById('refreshCacheBtn');
     const scanQrBtn = document.getElementById('scanQrBtn');
     const qrImportInput = document.getElementById('qrImportInput');
+    const proxyToggleBtn = document.getElementById('proxyToggleBtn');
 
     if (addBtn) {
         addBtn.onclick = (e) => {
@@ -300,6 +592,13 @@ function setupEventListeners() {
                     logSocket("Cache cleared");
                 });
             }
+        };
+    }
+
+    if (proxyToggleBtn) {
+        proxyToggleBtn.onclick = (e) => {
+            e.preventDefault();
+            toggleProxy();
         };
     }
 
@@ -377,6 +676,8 @@ function setupEventListeners() {
         socketUrlInput.addEventListener('input', renderBridgeShareInfo);
         socketUrlInput.addEventListener('change', renderBridgeShareInfo);
     }
+
+    updateProxyUi();
 
     // Mode switching (tabs)
     const modeButtons = document.querySelectorAll('.mode-button');
@@ -585,13 +886,15 @@ async function connectToSocket(url) {
         logSocket(`✅ Connected to bridge room ${bridgeRoomId}`);
 
         sendSocketEvent('bridge:join', { roomId: bridgeRoomId });
+        sendRoleStateToServer();
+        syncProxyStateToServiceWorker();
         
         queue.forEach(item => {
             sendSocketEvent('queue:add', { item });
         });
     };
     
-    socket.onmessage = (event) => {
+    socket.onmessage = async (event) => {
         console.log("📨 Received:", event.data);
         
         try {
@@ -607,9 +910,24 @@ async function connectToSocket(url) {
                 return;
             }
 
+            if (data.type === 'bridge:role-ack') {
+                logSocket(`✅ Role acknowledged: ${data.role}`);
+                return;
+            }
+
             if (data.type === 'bridge:error') {
                 setBridgeConnectionState('Bridge: error', bridgeRoomId);
                 logSocket(`❌ ${data.message || 'Bridge error'}`);
+                return;
+            }
+
+            if (data.type === 'FETCH_REQUEST' && deviceRole === 'provider') {
+                await handleProviderFetchRequest(data);
+                return;
+            }
+
+            if (data.type === 'FETCH_RESPONSE') {
+                await handleSocketProxyResponse(data);
                 return;
             }
 

@@ -34,6 +34,8 @@ node server.js
 - Clients connect to the WebSocket server in `server.js` and broadcast JSON events.
 - Devices must use the same bridge key or room ID before connecting; the server only forwards messages inside that room.
 - The quick-connect panel can render a QR for the current socket URL and room, and the `Scan QR` button can import the same data from an image capture.
+- The `Proxy ON/OFF` control on the receiver enables service-worker interception, which forwards network requests to the phone provider through the websocket bridge.
+- Phones default to `provider` mode so they can fetch the requested URL over mobile data and return the response through `FETCH_RESPONSE`.
 - Supported event types used by the UI:
   - `queue:add` — payload includes `item`, `clientId`, `timestamp`.
   - `queue:flush` — payload includes `clientId`, `timestamp`.

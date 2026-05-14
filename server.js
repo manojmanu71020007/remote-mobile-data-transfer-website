@@ -103,6 +103,36 @@ function sendJson(ws, payload) {
     }
 }
 
+function findRoomClientByRole(roomId, role) {
+    const roomClients = clientsByRoom.get(roomId);
+    if (!roomClients) {
+        return null;
+    }
+
+    for (const client of roomClients) {
+        if (client.readyState === WebSocket.OPEN && client.role === role) {
+            return client;
+        }
+    }
+
+    return null;
+}
+
+function findRoomClientByClientId(roomId, clientId) {
+    const roomClients = clientsByRoom.get(roomId);
+    if (!roomClients || !clientId) {
+        return null;
+    }
+
+    for (const client of roomClients) {
+        if (client.readyState === WebSocket.OPEN && client.clientId === clientId) {
+            return client;
+        }
+    }
+
+    return null;
+}
+
 // Helper to find your IP automatically
 const interfaces = os.networkInterfaces();
 console.log("--- Server Starting ---");
@@ -153,6 +183,8 @@ wss.on('connection', (ws) => {
             leaveRoom(ws);
             ws.roomId = roomId;
             ws.roomKey = roomId;
+            ws.clientId = typeof payload.clientId === 'string' ? payload.clientId : null;
+            ws.role = typeof payload.role === 'string' ? payload.role : ws.role;
             getRoomClients(roomId).add(ws);
 
             sendJson(ws, {
@@ -163,6 +195,22 @@ wss.on('connection', (ws) => {
             });
 
             console.log(`Joined room ${roomId}. Room size: ${getRoomClients(roomId).size}`);
+            return;
+        }
+
+        if (payload.type === 'bridge:role') {
+            const role = typeof payload.role === 'string' ? payload.role.trim() : '';
+            if (role) {
+                ws.role = role;
+                ws.clientId = typeof payload.clientId === 'string' ? payload.clientId : ws.clientId;
+                sendJson(ws, {
+                    type: 'bridge:role-ack',
+                    role,
+                    roomId: ws.roomId,
+                    timestamp: new Date().toISOString()
+                });
+                console.log(`Role set to ${role} in room ${ws.roomId}.`);
+            }
             return;
         }
 
@@ -189,6 +237,43 @@ wss.on('connection', (ws) => {
             }
         } else {
             console.warn('MongoDB not connected. Skipping BridgeLog save.');
+        }
+
+        if (payload.type === 'FETCH_REQUEST') {
+            const provider = findRoomClientByRole(ws.roomId, 'provider');
+            if (!provider) {
+                sendJson(ws, {
+                    type: 'FETCH_RESPONSE',
+                    requestId: payload.requestId,
+                    requesterClientId: payload.requesterClientId || ws.clientId || payload.clientId || null,
+                    response: {
+                        ok: false,
+                        status: 503,
+                        statusText: 'No provider available',
+                        headers: { 'content-type': 'text/plain' },
+                        bodyText: 'No provider device is available in this room.'
+                    }
+                });
+                console.warn(`No provider found in room ${ws.roomId} for FETCH_REQUEST.`);
+                return;
+            }
+
+            provider.send(message);
+            console.log(`Forwarded FETCH_REQUEST to provider in room ${ws.roomId}.`);
+            return;
+        }
+
+        if (payload.type === 'FETCH_RESPONSE') {
+            const requesterClientId = payload.requesterClientId || payload.targetClientId || payload.clientId || null;
+            const requester = findRoomClientByClientId(ws.roomId, requesterClientId);
+
+            if (requester) {
+                requester.send(message);
+                console.log(`Delivered FETCH_RESPONSE to ${requesterClientId} in room ${ws.roomId}.`);
+                return;
+            }
+
+            console.warn(`No requester found for FETCH_RESPONSE in room ${ws.roomId}; broadcasting to room.`);
         }
 
         // Broadcast only within the joined room.
