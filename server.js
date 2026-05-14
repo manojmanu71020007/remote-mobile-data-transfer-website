@@ -44,6 +44,37 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ server });
+const clientsByRoom = new Map();
+
+function getRoomClients(roomId) {
+    if (!clientsByRoom.has(roomId)) {
+        clientsByRoom.set(roomId, new Set());
+    }
+
+    return clientsByRoom.get(roomId);
+}
+
+function leaveRoom(ws) {
+    if (!ws.roomId) {
+        return;
+    }
+
+    const roomClients = clientsByRoom.get(ws.roomId);
+    if (roomClients) {
+        roomClients.delete(ws);
+        if (roomClients.size === 0) {
+            clientsByRoom.delete(ws.roomId);
+        }
+    }
+
+    ws.roomId = null;
+}
+
+function sendJson(ws, payload) {
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(payload));
+    }
+}
 
 // Helper to find your IP automatically
 const interfaces = os.networkInterfaces();
@@ -59,21 +90,74 @@ for (let devName in interfaces) {
 wss.on('connection', (ws) => {
     console.log(`[${new Date().toLocaleTimeString()}] New device connected.`);
     console.log(`Total clients: ${wss.clients.size}`);
+    ws.roomId = null;
 
     ws.on('message', (data) => {
         const message = data.toString();
         console.log(`Received: ${message}`);
 
-        // THE FIX: Broadcast to EVERYONE connected
-        wss.clients.forEach((client) => {
+        let payload = null;
+
+        try {
+            payload = JSON.parse(message);
+        } catch (error) {
+            sendJson(ws, {
+                type: 'bridge:error',
+                message: 'Messages must be JSON objects.',
+                timestamp: new Date().toISOString()
+            });
+            console.warn('Ignored non-JSON websocket message.');
+            return;
+        }
+
+        if (payload.type === 'bridge:join') {
+            const roomId = typeof payload.roomId === 'string' ? payload.roomId.trim() : '';
+
+            if (!roomId) {
+                sendJson(ws, {
+                    type: 'bridge:error',
+                    message: 'A bridge key or room ID is required.',
+                    timestamp: new Date().toISOString()
+                });
+                return;
+            }
+
+            leaveRoom(ws);
+            ws.roomId = roomId;
+            getRoomClients(roomId).add(ws);
+
+            sendJson(ws, {
+                type: 'bridge:joined',
+                roomId,
+                roomSize: getRoomClients(roomId).size,
+                timestamp: new Date().toISOString()
+            });
+
+            console.log(`Joined room ${roomId}. Room size: ${getRoomClients(roomId).size}`);
+            return;
+        }
+
+        if (!ws.roomId) {
+            sendJson(ws, {
+                type: 'bridge:error',
+                message: 'Join a bridge room before sending data.',
+                timestamp: new Date().toISOString()
+            });
+            console.warn('Rejected message from unpaired client.');
+            return;
+        }
+
+        // Broadcast only within the joined room.
+        getRoomClients(ws.roomId).forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
                 client.send(message);
             }
         });
-        console.log(`Broadcasting to ${wss.clients.size} clients.`);
+        console.log(`Broadcasting to room ${ws.roomId} (${getRoomClients(ws.roomId).size} clients).`);
     });
 
     ws.on('close', () => {
+        leaveRoom(ws);
         console.log("Device disconnected.");
     });
 });

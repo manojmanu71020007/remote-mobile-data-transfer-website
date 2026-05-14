@@ -3,7 +3,9 @@ let queue = [];
 let peerConnection = null;
 let socket = null;
 let clientId = null;
+let bridgeRoomId = '';
 const FALLBACK_IP = "10.98.169.218"; // Your laptop's hotspot IP
+const BRIDGE_KEY_STORAGE = 'data-bridge-room-id';
 const STUN_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
@@ -26,6 +28,166 @@ function getLocalSocketUrl() {
     return `ws://${FALLBACK_IP}:8080`;
 }
 
+function getBridgeSharePayload() {
+    return {
+        type: 'bridge:pair',
+        roomId: getBridgeRoomId(),
+        socketUrl: getLocalSocketUrl(),
+        clientId,
+        generatedAt: new Date().toISOString()
+    };
+}
+
+function getBridgeShareText() {
+    return JSON.stringify(getBridgeSharePayload(), null, 2);
+}
+
+function applyBridgeSharePayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+        logSocket('❌ QR payload missing room or socket URL');
+        return;
+    }
+
+    const roomId = typeof payload.roomId === 'string' ? payload.roomId.trim() : '';
+    const socketUrl = typeof payload.socketUrl === 'string' ? payload.socketUrl.trim() : '';
+
+    if (!roomId || !socketUrl) {
+        logSocket('❌ QR payload missing room or socket URL');
+        return;
+    }
+
+    const bridgeRoomInput = getBridgeRoomInput();
+    const socketUrlInput = document.getElementById('socketUrlInput');
+
+    if (bridgeRoomInput) {
+        bridgeRoomInput.value = roomId;
+        storeBridgeRoomId(roomId);
+    }
+
+    if (socketUrlInput) {
+        socketUrlInput.value = socketUrl;
+    }
+
+    bridgeRoomId = roomId;
+    renderBridgeShareInfo();
+    setBridgeConnectionState('Bridge: paired', roomId);
+    logSocket(`✅ QR imported for room ${roomId}`);
+}
+
+async function decodeQrImage(file) {
+    if (!file) {
+        return;
+    }
+
+    if (!window.jsQR) {
+        logSocket('❌ QR decoder is unavailable');
+        return;
+    }
+
+    const imageUrl = URL.createObjectURL(file);
+    try {
+        const image = new Image();
+        const imageLoaded = new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = reject;
+        });
+
+        image.src = imageUrl;
+        await imageLoaded;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth || image.width;
+        canvas.height = image.naturalHeight || image.height;
+        const context = canvas.getContext('2d');
+        if (!context) {
+            throw new Error('Canvas unavailable');
+        }
+
+        context.drawImage(image, 0, 0);
+        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+        const result = window.jsQR(imageData.data, imageData.width, imageData.height);
+
+        if (!result || !result.data) {
+            logSocket('❌ No QR code detected in the selected image');
+            return;
+        }
+
+        const payload = JSON.parse(result.data);
+        applyBridgeSharePayload(payload);
+    } catch (error) {
+        console.error('QR decode failed:', error);
+        logSocket(`❌ QR import failed: ${error.message}`);
+    } finally {
+        URL.revokeObjectURL(imageUrl);
+    }
+}
+
+function renderBridgeShareInfo() {
+    const connectionUrl = document.getElementById('connectionUrl');
+    const qrcode = document.getElementById('qrcode');
+    const roomId = getBridgeRoomId();
+    const socketUrl = getLocalSocketUrl();
+
+    if (connectionUrl) {
+        connectionUrl.textContent = roomId
+            ? `${socketUrl} | Room: ${roomId}`
+            : `${socketUrl} | Room: not set`;
+    }
+
+    if (qrcode && window.QRCode) {
+        qrcode.innerHTML = '';
+        new QRCode(qrcode, {
+            text: getBridgeShareText(),
+            width: 176,
+            height: 176,
+            colorDark: '#081018',
+            colorLight: '#f5f7fa',
+            correctLevel: QRCode.CorrectLevel.M
+        });
+    }
+}
+
+function getBridgeRoomInput() {
+    return document.getElementById('bridgeKeyInput');
+}
+
+function getBridgeRoomId() {
+    const bridgeRoomInput = getBridgeRoomInput();
+    return bridgeRoomInput ? bridgeRoomInput.value.trim() : '';
+}
+
+function loadStoredBridgeRoomId() {
+    try {
+        return window.localStorage.getItem(BRIDGE_KEY_STORAGE) || '';
+    } catch (error) {
+        return '';
+    }
+}
+
+function storeBridgeRoomId(roomId) {
+    try {
+        window.localStorage.setItem(BRIDGE_KEY_STORAGE, roomId);
+    } catch (error) {
+        // Ignore storage failures in private or restricted modes.
+    }
+}
+
+function syncBridgeStatus(message) {
+    const statusLabel = document.getElementById('socketConfigStatus');
+    if (statusLabel) {
+        statusLabel.textContent = message;
+    }
+}
+
+function setBridgeConnectionState(state, roomId = '') {
+    const bridgeStatus = document.getElementById('bridgeStatus');
+    if (bridgeStatus) {
+        bridgeStatus.innerText = state;
+    }
+
+    syncBridgeStatus(roomId ? `Bridge room: ${roomId}` : 'Enter a bridge key or room ID, then connect.');
+}
+
 function sendSocketEvent(type, payload = {}) {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
         return;
@@ -34,6 +196,7 @@ function sendSocketEvent(type, payload = {}) {
     socket.send(JSON.stringify({
         type,
         clientId,
+        roomId: bridgeRoomId,
         timestamp: new Date().toISOString(),
         ...payload
     }));
@@ -79,7 +242,13 @@ function getQueueTimestamp(item) {
 window.addEventListener('DOMContentLoaded', () => {
     console.log("App initialized. UI Unlocked.");
     clientId = createClientId();
+    const bridgeRoomInput = getBridgeRoomInput();
+    if (bridgeRoomInput) {
+        bridgeRoomInput.value = loadStoredBridgeRoomId();
+    }
+    setBridgeConnectionState('Bridge: idle');
     setupEventListeners();
+    renderBridgeShareInfo();
     renderQueue();
     updateNetworkStatus();
 });
@@ -90,6 +259,8 @@ function setupEventListeners() {
     const addBtn = document.getElementById('add-to-queue');
     const flushBtn = document.getElementById('flush-queue');
     const refreshCacheBtn = document.getElementById('refreshCacheBtn');
+    const scanQrBtn = document.getElementById('scanQrBtn');
+    const qrImportInput = document.getElementById('qrImportInput');
 
     if (addBtn) {
         addBtn.onclick = (e) => {
@@ -132,6 +303,21 @@ function setupEventListeners() {
         };
     }
 
+    if (scanQrBtn && qrImportInput) {
+        scanQrBtn.onclick = (e) => {
+            e.preventDefault();
+            qrImportInput.value = '';
+            qrImportInput.click();
+        };
+
+        qrImportInput.addEventListener('change', async () => {
+            const file = qrImportInput.files && qrImportInput.files[0];
+            if (file) {
+                await decodeQrImage(file);
+            }
+        });
+    }
+
     // WebRTC controls
     const createOfferBtn = document.getElementById('createOfferBtn');
     const acceptOfferBtn = document.getElementById('acceptOfferBtn');
@@ -171,7 +357,25 @@ function setupEventListeners() {
         seedSocketBtn.onclick = () => {
             socketUrlInput.value = getLocalSocketUrl();
             logSocket("Hotspot defaults set: " + socketUrlInput.value);
+            renderBridgeShareInfo();
         };
+    }
+
+    const bridgeRoomInput = getBridgeRoomInput();
+    if (bridgeRoomInput) {
+        bridgeRoomInput.addEventListener('input', () => {
+            storeBridgeRoomId(bridgeRoomInput.value.trim());
+            renderBridgeShareInfo();
+        });
+        bridgeRoomInput.addEventListener('change', () => {
+            storeBridgeRoomId(bridgeRoomInput.value.trim());
+            renderBridgeShareInfo();
+        });
+    }
+
+    if (socketUrlInput) {
+        socketUrlInput.addEventListener('input', renderBridgeShareInfo);
+        socketUrlInput.addEventListener('change', renderBridgeShareInfo);
     }
 
     // Mode switching (tabs)
@@ -355,9 +559,21 @@ function fallbackCopy(text) {
 }
 
 // 7. WebSocket Connection
-function connectToSocket(url) {
+async function connectToSocket(url) {
     console.log(`Attempting to connect to ${url}`);
-    logSocket(`Connecting to ${url}...`);
+    const roomId = getBridgeRoomId();
+
+    if (!roomId) {
+        setBridgeConnectionState('Bridge: missing key');
+        logSocket('❌ Enter a bridge key or room ID before connecting');
+        return;
+    }
+
+    bridgeRoomId = roomId;
+    storeBridgeRoomId(roomId);
+    setBridgeConnectionState('Bridge: connecting', roomId);
+    renderBridgeShareInfo();
+    logSocket(`Connecting to ${url} with bridge room ${roomId}...`);
     
     socket = new WebSocket(url);
     
@@ -365,7 +581,10 @@ function connectToSocket(url) {
         console.log("✅ WebSocket connected");
         document.getElementById('bridgeStatus').innerText = "Connected";
         document.getElementById('socketState').innerText = "open";
-        logSocket("✅ Connected");
+        setBridgeConnectionState('Bridge: connected', bridgeRoomId);
+        logSocket(`✅ Connected to bridge room ${bridgeRoomId}`);
+
+        sendSocketEvent('bridge:join', { roomId: bridgeRoomId });
         
         queue.forEach(item => {
             sendSocketEvent('queue:add', { item });
@@ -378,6 +597,19 @@ function connectToSocket(url) {
         try {
             const data = JSON.parse(event.data);
             if (data.clientId && data.clientId === clientId) {
+                return;
+            }
+
+            if (data.type === 'bridge:joined') {
+                const joinedRoomId = typeof data.roomId === 'string' ? data.roomId : bridgeRoomId;
+                setBridgeConnectionState(`Bridge: paired`, joinedRoomId);
+                logSocket(`✅ Joined bridge room ${joinedRoomId}`);
+                return;
+            }
+
+            if (data.type === 'bridge:error') {
+                setBridgeConnectionState('Bridge: error', bridgeRoomId);
+                logSocket(`❌ ${data.message || 'Bridge error'}`);
                 return;
             }
 

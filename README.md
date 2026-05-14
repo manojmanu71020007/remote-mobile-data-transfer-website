@@ -24,6 +24,8 @@ node server.js
 ## How syncing works
 
 - Clients connect to the WebSocket server in `server.js` and broadcast JSON events.
+- Devices must use the same bridge key or room ID before connecting; the server only forwards messages inside that room.
+- The quick-connect panel can render a QR for the current socket URL and room, and the `Scan QR` button can import the same data from an image capture.
 - Supported event types used by the UI:
   - `queue:add` — payload includes `item`, `clientId`, `timestamp`.
   - `queue:flush` — payload includes `clientId`, `timestamp`.

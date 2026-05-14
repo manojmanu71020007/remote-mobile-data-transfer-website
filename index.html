@@ -14,6 +14,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Crect width='256' height='256' rx='56' fill='%23081018'/%3E%3Cpath d='M48 128h160M128 48v160' stroke='%2369f0c2' stroke-width='20' stroke-linecap='round'/%3E%3Ccircle cx='128' cy='128' r='56' fill='none' stroke='%23f5f7fa' stroke-width='14'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="/node_modules/jsqr/dist/jsQR.js"></script>
 </head>
 <body>
   <div class="background-grid" aria-hidden="true"></div>
@@ -44,6 +45,10 @@
             <p class="qr-label">Quick Connect</p>
             <p class="qr-text">Scan with your phone to join this bridge</p>
             <p class="qr-url" id="connectionUrl">Loading connection info...</p>
+            <div class="inline-actions" style="margin-top: 12px;">
+              <button class="button button-secondary" id="scanQrBtn" type="button">Scan QR</button>
+              <input id="qrImportInput" type="file" accept="image/*" capture="environment" hidden>
+            </div>
           </div>
           <div id="qrcode" class="qr-display"></div>
         </div>
@@ -111,9 +116,13 @@
 
         <div class="bridge-section" data-panel="socket">
           <p class="section-copy">
-            Boilerplate for a local network socket. Point this at a phone-hosted endpoint or a small LAN relay once the Android side is ready.
+            Pair devices by entering the same bridge key or room ID on every device before connecting to the socket.
           </p>
           <p class="section-copy" id="socketConfigStatus" aria-live="polite"></p>
+          <label>
+            <span>Bridge key / room ID</span>
+            <input id="bridgeKeyInput" type="text" autocomplete="off" placeholder="shared-secret-room">
+          </label>
           <label>
             <span>Socket endpoint</span>
             <input id="socketUrlInput" type="url" placeholder="ws://192.168.43.1:8080">
