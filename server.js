@@ -3,6 +3,7 @@ const http = require('http');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
 
 const PORT = 8080;
 const server = http.createServer((req, res) => {
@@ -45,6 +46,32 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 const clientsByRoom = new Map();
+
+const bridgeLogSchema = new mongoose.Schema({
+    room_id: { type: String, required: true },
+    sender: { type: String },
+    payload: { type: mongoose.Schema.Types.Mixed },
+    timestamp: { type: Date, default: Date.now }
+});
+
+const BridgeLog = mongoose.model('BridgeLog', bridgeLogSchema);
+
+async function connectMongo() {
+    const mongoUri = process.env.MONGODB_URI;
+
+    if (!mongoUri) {
+        console.warn('MONGODB_URI is not set. MongoDB logging: disabled');
+        return;
+    }
+
+    try {
+        await mongoose.connect(mongoUri);
+        console.log('✅ MongoDB connected. MongoDB logging: enabled');
+    } catch (error) {
+        console.error(`❌ MongoDB connection failed: ${error.message}`);
+        console.warn('MongoDB logging: disabled');
+    }
+}
 
 function getRoomClients(roomId) {
     if (!clientsByRoom.has(roomId)) {
@@ -92,7 +119,7 @@ wss.on('connection', (ws) => {
     console.log(`Total clients: ${wss.clients.size}`);
     ws.roomId = null;
 
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
         const message = data.toString();
         console.log(`Received: ${message}`);
 
@@ -147,6 +174,21 @@ wss.on('connection', (ws) => {
             return;
         }
 
+        if (mongoose.connection.readyState === 1) {
+            try {
+                const newLog = new BridgeLog({
+                    room_id: ws.roomId,
+                    sender: typeof payload.sender === 'string' ? payload.sender : (payload.clientId || 'unknown'),
+                    payload
+                });
+                await newLog.save();
+            } catch (error) {
+                console.error(`⚠️ Failed to save BridgeLog: ${error.message}`);
+            }
+        } else {
+            console.warn('MongoDB not connected. Skipping BridgeLog save.');
+        }
+
         // Broadcast only within the joined room.
         getRoomClients(ws.roomId).forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
@@ -173,3 +215,5 @@ server.on('error', (e) => {
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Bridge Server live on port ${PORT}`);
 });
+
+connectMongo();

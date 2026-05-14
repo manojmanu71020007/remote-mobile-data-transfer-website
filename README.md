@@ -10,6 +10,14 @@ A small PWA that syncs a simple queue across devices using a WebSocket broadcast
 npm install
 ```
 
+- Configure environment variables:
+
+```powershell
+copy .env.example .env
+```
+
+- Set `MONGODB_URI` in `.env` (or system environment) to enable room message logging.
+
 - Start the server:
 
 ```powershell
@@ -39,5 +47,6 @@ node server.js
 
 ## Notes
 
-- The server broadcasts all received messages to every connected client. Keep clients updated to the latest `app.js` to avoid legacy parsing issues.
+- The server broadcasts received messages only to clients in the same bridge room.
+- MongoDB logging is optional; when `MONGODB_URI` is missing or unreachable, websocket sync still runs.
 - Repo: https://github.com/manojmanu71020007/remote-mobile-data-transfer-website
