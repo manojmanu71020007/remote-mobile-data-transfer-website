@@ -51,6 +51,7 @@ const bridgeLogSchema = new mongoose.Schema({
     room_id: { type: String, required: true },
     sender: { type: String },
     payload: { type: mongoose.Schema.Types.Mixed },
+    dataBytes: { type: Number, default: 0 },
     timestamp: { type: Date, default: Date.now }
 });
 
@@ -118,19 +119,20 @@ function findRoomClientByRole(roomId, role) {
     return null;
 }
 
-function findRoomClientByClientId(roomId, clientId) {
-    const roomClients = clientsByRoom.get(roomId);
-    if (!roomClients || !clientId) {
-        return null;
-    }
-
-    for (const client of roomClients) {
-        if (client.readyState === WebSocket.OPEN && client.clientId === clientId) {
-            return client;
+function calculateDataBytes(payload) {
+    if (payload.type === 'FETCH_RESPONSE' && payload.response) {
+        const res = payload.response;
+        if (res.bodyBase64) {
+            return Math.floor((res.bodyBase64.length * 3) / 4); // Approximate bytes from base64
+        }
+        if (res.bodyText) {
+            return Buffer.byteLength(res.bodyText, 'utf8');
         }
     }
-
-    return null;
+    if (payload.type === 'FETCH_REQUEST' && payload.request && payload.request.bodyBase64) {
+        return Math.floor((payload.request.bodyBase64.length * 3) / 4);
+    }
+    return 0;
 }
 
 // Helper to find your IP automatically
@@ -226,10 +228,12 @@ wss.on('connection', (ws) => {
 
         if (mongoose.connection.readyState === 1) {
             try {
+                const dataBytes = calculateDataBytes(payload);
                 const newLog = new BridgeLog({
                     room_id: ws.roomKey,
                     sender: 'mobile_device',
-                    payload
+                    payload,
+                    dataBytes
                 });
                 await newLog.save();
             } catch (error) {

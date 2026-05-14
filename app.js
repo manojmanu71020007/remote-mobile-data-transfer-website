@@ -11,6 +11,7 @@ let deviceRole = isLikelyMobileDevice ? 'provider' : 'receiver';
 const FALLBACK_IP = "10.98.169.218"; // Your laptop's hotspot IP
 const BRIDGE_KEY_STORAGE = 'data-bridge-room-id';
 const PROXY_STATE_STORAGE = 'data-bridge-proxy-enabled';
+let displayRequestId = null;
 const STUN_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
@@ -211,20 +212,16 @@ function renderBridgeShareInfo() {
     }
 }
 
-function getProxyStatusText() {
-    return proxyEnabled ? 'Proxy: on' : 'Proxy: off';
-}
-
 function updateProxyUi() {
-    const proxyToggleBtn = document.getElementById('proxyToggleBtn');
+    const roleToggleBtn = document.getElementById('roleToggleBtn');
     const proxyStatus = document.getElementById('proxyStatus');
 
-    if (proxyToggleBtn) {
-        proxyToggleBtn.textContent = proxyEnabled ? 'Proxy ON' : 'Proxy OFF';
+    if (roleToggleBtn) {
+        roleToggleBtn.textContent = deviceRole === 'provider' ? 'Provider Mode' : 'Receiver Mode';
     }
 
     if (proxyStatus) {
-        proxyStatus.textContent = `${getProxyStatusText()} | Device role: ${deviceRole}`;
+        proxyStatus.textContent = `Proxy: ${proxyEnabled ? 'on' : 'off'} | Device role: ${deviceRole}`;
     }
 }
 
@@ -284,13 +281,30 @@ function sendRoleStateToServer() {
     }
 }
 
-function toggleProxy() {
-    proxyEnabled = !proxyEnabled;
+function toggleRole() {
+    deviceRole = deviceRole === 'provider' ? 'receiver' : 'provider';
+    proxyEnabled = (deviceRole === 'receiver');
     storeProxyState(proxyEnabled);
     updateProxyUi();
     syncProxyStateToServiceWorker();
     sendRoleStateToServer();
-    logSocket(proxyEnabled ? 'Proxy enabled' : 'Proxy disabled');
+    logSocket(`Switched to ${deviceRole} mode`);
+}
+
+function fetchViaProxy() {
+    const url = document.getElementById('proxyUrlInput').value.trim();
+    if (!url) {
+        logSocket('❌ Enter a URL to fetch');
+        return;
+    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        logSocket('❌ Socket not connected');
+        return;
+    }
+    displayRequestId = `display-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const request = { url, method: 'GET', headers: {}, mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'follow', referrer: '' };
+    sendSocketEvent('FETCH_REQUEST', { requestId: displayRequestId, requesterClientId: clientId, request, sender: deviceRole, targetRole: 'provider' });
+    logSocket(`📤 Sent display fetch request for ${url}`);
 }
 
 function serializeResponseForServiceWorker(response) {
@@ -409,6 +423,33 @@ async function handleSocketProxyResponse(payload) {
         headers: { 'content-type': 'text/plain' },
         bodyText: 'Bridge response payload missing.'
     };
+
+    if (payload.requestId === displayRequestId) {
+        // Display in iframe
+        const iframe = document.getElementById('proxyIframe');
+        if (iframe && responsePayload.ok) {
+            const contentType = responsePayload.headers['content-type'] || 'text/html';
+            let content = '';
+            if (responsePayload.bodyBase64) {
+                const bytes = base64ToArrayBuffer(responsePayload.bodyBase64);
+                if (contentType.startsWith('text/')) {
+                    content = new TextDecoder().decode(bytes);
+                } else {
+                    // For binary, create a blob URL
+                    const blob = new Blob([bytes], { type: contentType });
+                    content = `<iframe src="${URL.createObjectURL(blob)}" style="width:100%;height:100%;border:none;"></iframe>`;
+                }
+            } else if (responsePayload.bodyText) {
+                content = responsePayload.bodyText;
+            }
+            iframe.srcdoc = content;
+            logSocket(`✅ Displayed proxied content (${responsePayload.status})`);
+        } else {
+            logSocket(`❌ Failed to display proxied content (${responsePayload.status})`);
+        }
+        displayRequestId = null;
+        return;
+    }
 
     const didSend = await sendResponseToServiceWorker(payload.requestId, responsePayload);
     if (!didSend) {
@@ -565,7 +606,7 @@ function setupEventListeners() {
     const refreshCacheBtn = document.getElementById('refreshCacheBtn');
     const scanQrBtn = document.getElementById('scanQrBtn');
     const qrImportInput = document.getElementById('qrImportInput');
-    const proxyToggleBtn = document.getElementById('proxyToggleBtn');
+    const proxyToggleBtn = document.getElementById('roleToggleBtn');
 
     if (addBtn) {
         addBtn.onclick = (e) => {
@@ -611,7 +652,15 @@ function setupEventListeners() {
     if (proxyToggleBtn) {
         proxyToggleBtn.onclick = (e) => {
             e.preventDefault();
-            toggleProxy();
+            toggleRole();
+        };
+    }
+
+    const fetchProxyBtn = document.getElementById('fetchProxyBtn');
+    if (fetchProxyBtn) {
+        fetchProxyBtn.onclick = (e) => {
+            e.preventDefault();
+            fetchViaProxy();
         };
     }
 
