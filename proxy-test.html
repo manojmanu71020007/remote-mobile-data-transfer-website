@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#081018">
+  <title>Data Bridge Proxy Test</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="proxy-test.js" defer></script>
+</head>
+<body>
+  <div class="background-grid" aria-hidden="true"></div>
+  <div class="background-glow background-glow-left" aria-hidden="true"></div>
+  <div class="background-glow background-glow-right" aria-hidden="true"></div>
+
+  <main class="shell">
+    <header class="topbar card">
+      <div>
+        <p class="eyebrow">Bridge proxy harness</p>
+        <h1>Proxy Test</h1>
+        <p class="lead">Use this page on the laptop receiver to send web requests through the websocket bridge and provider phone.</p>
+      </div>
+      <div class="status-cluster">
+        <div class="status-pill" id="swStatus">Service worker: pending</div>
+        <div class="status-pill" id="netStatus">Network: checking</div>
+        <div class="status-pill" id="bridgeStatus">Bridge: idle</div>
+        <div class="status-pill" id="proxyStatus">Proxy: off</div>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="card panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">Bridge Connection</p>
+            <h2>Join the room</h2>
+          </div>
+        </div>
+
+        <label>
+          <span>Bridge key / room ID</span>
+          <input id="bridgeKeyInput" type="text" autocomplete="off" placeholder="shared-secret-room">
+        </label>
+        <label>
+          <span>Socket endpoint</span>
+          <input id="socketUrlInput" type="url" placeholder="ws://10.98.169.218:8080">
+        </label>
+        <div class="bridge-actions">
+          <button class="button" type="button" id="connectBtn">Connect</button>
+          <button class="button button-secondary" type="button" id="disconnectBtn">Disconnect</button>
+          <button class="button button-secondary" type="button" id="proxyToggleBtn">Proxy OFF</button>
+        </div>
+        <p class="section-copy" id="bridgeHint" aria-live="polite">Connect first, then enable proxy.</p>
+      </article>
+
+      <article class="card panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-label">Request Console</p>
+            <h2>Send proxied fetches</h2>
+          </div>
+        </div>
+
+        <label>
+          <span>Request URL</span>
+          <input id="requestUrlInput" type="url" placeholder="https://jsonplaceholder.typicode.com/todos/1" value="https://jsonplaceholder.typicode.com/todos/1">
+        </label>
+        <label>
+          <span>Method</span>
+          <select id="requestMethodInput">
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+            <option value="DELETE">DELETE</option>
+          </select>
+        </label>
+        <label>
+          <span>Body</span>
+          <textarea id="requestBodyInput" rows="5" placeholder='Optional JSON body for POST/PUT/PATCH'></textarea>
+        </label>
+        <div class="bridge-actions">
+          <button class="button" type="button" id="sendRequestBtn">Send request</button>
+          <button class="button button-secondary" type="button" id="clearBtn">Clear log</button>
+        </div>
+        <label>
+          <span>Response</span>
+          <textarea id="responseOutput" rows="8" readonly></textarea>
+        </label>
+        <label>
+          <span>Log</span>
+          <textarea id="requestLog" rows="8" readonly></textarea>
+        </label>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

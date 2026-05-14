@@ -46,6 +46,7 @@ node server.js
 1. Open the app on two devices (desktop + phone) pointing to the server URL.
 2. Add an item to the queue on one device — it should appear on the other device and be logged in the socket log.
 3. Use the "Flush queue" action on one device — both clients should clear their queues and record the `queue:flush` event.
+4. Open `proxy-test.html` on the laptop side to test proxying a fetch request through the bridge.
 
 ## Notes
 
