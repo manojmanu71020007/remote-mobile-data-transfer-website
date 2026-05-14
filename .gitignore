@@ -6,3 +6,5 @@ node_modules/
 npm-debug.log
 dist/
 coverage/
+gh_*.txt
+git_*.txt
