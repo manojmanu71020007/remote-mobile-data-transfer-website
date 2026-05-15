@@ -59,6 +59,16 @@ const bridgeLogSchema = new mongoose.Schema({
 
 const BridgeLog = mongoose.model('BridgeLog', bridgeLogSchema);
 
+const offlineMessageSchema = new mongoose.Schema({
+    room_id: { type: String, required: true },
+    payload: { type: mongoose.Schema.Types.Mixed, required: true },
+    requesterClientId: { type: String, default: null },
+    sender: { type: String, default: 'mobile_device' },
+    createdAt: { type: Date, default: Date.now }
+});
+
+const OfflineMessage = mongoose.model('OfflineMessage', offlineMessageSchema);
+
 async function connectMongo() {
     const mongoUri = process.env.MONGODB_URI;
 
@@ -164,8 +174,8 @@ async function handleSyncRequest(ws) {
     }
 
     try {
-        const unreadItems = await BridgeLog.find({ room_id: ws.roomId, unread: true }).sort({ timestamp: 1 }).lean();
-        if (unreadItems.length === 0) {
+        const offlineItems = await OfflineMessage.find({ room_id: ws.roomId }).sort({ createdAt: 1 }).lean();
+        if (offlineItems.length === 0) {
             sendJson(ws, {
                 type: 'SYNC_RESPONSE',
                 items: [],
@@ -176,15 +186,16 @@ async function handleSyncRequest(ws) {
 
         sendJson(ws, {
             type: 'SYNC_RESPONSE',
-            items: unreadItems,
+            items: offlineItems.map(item => ({
+                ...item,
+                _id: undefined,
+                room_id: undefined
+            })),
             timestamp: new Date().toISOString()
         });
 
-        await BridgeLog.updateMany(
-            { _id: { $in: unreadItems.map((item) => item._id) } },
-            { $set: { unread: false, deliveredAt: new Date() } }
-        );
-        console.log(`Sent ${unreadItems.length} unread item(s) from MongoDB to ${ws.clientId} in room ${ws.roomId}.`);
+        await OfflineMessage.deleteMany({ _id: { $in: offlineItems.map((item) => item._id) } });
+        console.log(`Sent ${offlineItems.length} offline message(s) from MongoDB to ${ws.clientId} in room ${ws.roomId} and deleted them.`);
     } catch (error) {
         console.error(`⚠️ Failed to service SYNC_REQUEST: ${error.message}`);
         sendJson(ws, {
@@ -344,6 +355,27 @@ wss.on('connection', (ws) => {
             if (requester) {
                 requester.send(message);
                 console.log(`Delivered FETCH_RESPONSE to ${requesterClientId} in room ${ws.roomId}.`);
+                return;
+            }
+
+            const receiver = findRoomClientByRole(ws.roomId, 'receiver');
+            if (!receiver) {
+                if (mongoose.connection.readyState === 1) {
+                    try {
+                        const offlineDoc = new OfflineMessage({
+                            room_id: ws.roomId,
+                            payload: message,
+                            requesterClientId,
+                            sender: ws.role || 'mobile_device'
+                        });
+                        await offlineDoc.save();
+                        console.log(`Saved offline message for room ${ws.roomId} (receiver offline).`);
+                    } catch (err) {
+                        console.error(`⚠️ Failed to save offline message: ${err.message}`);
+                    }
+                } else {
+                    console.warn('MongoDB not connected. Cannot persist offline message.');
+                }
                 return;
             }
 
