@@ -60,12 +60,9 @@ const bridgeLogSchema = new mongoose.Schema({
 const BridgeLog = mongoose.model('BridgeLog', bridgeLogSchema);
 
 const dataUsageSchema = new mongoose.Schema({
-    room_id: { type: String, required: true },
-    sender: { type: String },
-    payloadType: { type: String, default: 'unknown' },
-    bytes: { type: Number, default: 0 },
-    readableSize: { type: String, default: '0 B' },
-    createdAt: { type: Date, default: Date.now }
+    roomId: { type: String, required: true },
+    kb: { type: Number, required: true },
+    timestamp: { type: Date, default: Date.now }
 });
 
 const DataUsage = mongoose.model('DataUsage', dataUsageSchema);
@@ -174,7 +171,22 @@ function formatBytes(bytes) {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function calculateDataBytes(payload) {
+async function getTotalDataTransferredKB(roomId) {
+    if (mongoose.connection.readyState !== 1) {
+        return 0;
+    }
+
+    try {
+        const result = await DataUsage.aggregate([
+            { $match: { roomId } },
+            { $group: { _id: null, totalKB: { $sum: '$kb' } } }
+        ]);
+        return result.length > 0 ? result[0].totalKB : 0;
+    } catch (error) {
+        console.error(`⚠️ Failed to get total data for room ${roomId}: ${error.message}`);
+        return 0;
+    }
+}
     if (!payload) {
         return 0;
     }
@@ -363,6 +375,17 @@ wss.on('connection', (ws) => {
             return;
         }
 
+        if (payload.type === 'GET_TOTAL_DATA') {
+            const totalKB = await getTotalDataTransferredKB(ws.roomId);
+            sendJson(ws, {
+                type: 'TOTAL_DATA_RESPONSE',
+                totalKB,
+                roomId: ws.roomId,
+                timestamp: new Date().toISOString()
+            });
+            return;
+        }
+
         if (mongoose.connection.readyState === 1) {
             try {
                 const dataBytes = calculateDataBytes(payload);
@@ -378,13 +401,25 @@ wss.on('connection', (ws) => {
                 await newLog.save();
 
                 const dataUsageEntry = new DataUsage({
-                    room_id: ws.roomKey,
-                    sender: 'mobile_device',
-                    payloadType: payload.type || 'unknown',
-                    bytes: dataBytes,
-                    readableSize
+                    roomId: ws.roomKey,
+                    kb: dataBytes / 1024
                 });
                 await dataUsageEntry.save();
+
+                if (payload.type === 'queue:add' && ws.role === 'provider') {
+                    const usageEvent = {
+                        type: 'DATA_USAGE',
+                        roomId: ws.roomId,
+                        bytes: dataBytes,
+                        timestamp: new Date().toISOString()
+                    };
+                    const roomClients = getRoomClients(ws.roomId);
+                    roomClients.forEach((client) => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            client.send(JSON.stringify(usageEvent));
+                        }
+                    });
+                }
             } catch (error) {
                 console.error(`⚠️ Failed to save BridgeLog or DataUsage: ${error.message}`);
             }

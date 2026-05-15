@@ -18,6 +18,7 @@ const PROXY_STATE_STORAGE = 'data-bridge-proxy-enabled';
 const OFFLINE_QUEUE_STORAGE = 'data-bridge-offline-queue';
 const RECONNECT_ATTEMPTS_STORAGE = 'data-bridge-reconnect-attempts';
 let displayRequestId = null;
+let totalDataTransferredBytes = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const INITIAL_RECONNECT_DELAY = 2000; // 2 seconds
 const MAX_RECONNECT_DELAY = 30000; // 30 seconds
@@ -91,6 +92,26 @@ function objectToHeaders(headerObject = {}) {
     });
 
     return headers;
+}
+
+function formatKilobytes(bytes) {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) {
+        return '0 KB';
+    }
+    return `${(bytes / 1024).toFixed(2)} KB`;
+}
+
+function updateTotalDataTransferredUI() {
+    const el = document.getElementById('total-data-transferred');
+    if (el) {
+        el.innerText = formatKilobytes(totalDataTransferredBytes);
+    }
+}
+
+function requestTotalDataFromDB() {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        sendSocketEvent('GET_TOTAL_DATA');
+    }
 }
 
 function getLocalSocketUrl() {
@@ -654,6 +675,7 @@ window.addEventListener('DOMContentLoaded', () => {
     renderQueue();
     updateNetworkStatus();
     updateOfflineQueueStatus();
+    updateTotalDataTransferredUI();
     
     window.addEventListener('online', () => {
         logSocket('🔌 Network returned: attempting reconnect if needed');
@@ -1073,6 +1095,9 @@ async function connectToSocket(url) {
         // Flush offline queue when reconnected
         flushOfflineQueue();
 
+        // Request total data from DB
+        requestTotalDataFromDB();
+
         // Request unread sync items from server
         if (deviceRole === 'receiver') {
             sendSocketEvent('SYNC_PULL', {
@@ -1090,6 +1115,13 @@ async function connectToSocket(url) {
         try {
             const data = JSON.parse(event.data);
             if (data.clientId && data.clientId === clientId) {
+                return;
+            }
+
+            if (data.type === 'TOTAL_DATA_RESPONSE') {
+                totalDataTransferredBytes = (data.totalKB || 0) * 1024; // Convert back to bytes for consistency
+                updateTotalDataTransferredUI();
+                logSocket(`📊 Total data from DB: ${formatKilobytes(totalDataTransferredBytes)}`);
                 return;
             }
 
