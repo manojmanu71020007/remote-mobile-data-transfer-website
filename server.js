@@ -261,6 +261,7 @@ wss.on('connection', (ws) => {
         if (payload.type === 'FETCH_REQUEST') {
             const provider = findRoomClientByRole(ws.roomId, 'provider');
             if (!provider) {
+                console.log(`No provider found in room ${ws.roomId}. Available clients:`, Array.from(clientsByRoom.get(ws.roomId) || []).map(c => ({ id: c.clientId, role: c.role, state: c.readyState })));
                 sendJson(ws, {
                     type: 'FETCH_RESPONSE',
                     requestId: payload.requestId,
@@ -277,6 +278,7 @@ wss.on('connection', (ws) => {
                 return;
             }
 
+            console.log(`Routing FETCH_REQUEST from ${ws.clientId} to provider ${provider.clientId} in room ${ws.roomId}`);
             provider.send(message);
             console.log(`Forwarded FETCH_REQUEST to provider in room ${ws.roomId}.`);
             return;

@@ -541,19 +541,21 @@ function flushOfflineQueue() {
     offlineQueue.forEach((item, index) => {
         try {
             setTimeout(() => {
+                logSocket(`📤 Sending queued ${item.type} (${index + 1}/${offlineQueue.length})`);
                 sendSocketEvent(item.type, item.data);
                 successCount++;
-            }, index * 100); // Stagger sends to avoid overwhelming server
+                if (successCount === offlineQueue.length) {
+                    setTimeout(() => {
+                        window.localStorage.removeItem(OFFLINE_QUEUE_STORAGE);
+                        updateOfflineQueueStatus();
+                        logSocket(`✅ Flushed ${successCount}/${offlineQueue.length} items`);
+                    }, 500);
+                }
+            }, index * 200); // Increased delay to 200ms for better logging
         } catch (error) {
             console.error(`Failed to send queued item ${index}:`, error);
         }
     });
-
-    setTimeout(() => {
-        window.localStorage.removeItem(OFFLINE_QUEUE_STORAGE);
-        updateOfflineQueueStatus();
-        logSocket(`✅ Flushed ${successCount}/${offlineQueue.length} items`);
-    }, offlineQueue.length * 100 + 500);
 }
 
 function syncBridgeStatus(message) {
@@ -1077,6 +1079,7 @@ async function connectToSocket(url) {
             }
 
             if (data.type === 'FETCH_REQUEST' && deviceRole === 'provider') {
+                logSocket(`📨 Received FETCH_REQUEST from ${data.requesterClientId || data.clientId}: ${data.request?.url}`);
                 await handleProviderFetchRequest(data);
                 return;
             }
