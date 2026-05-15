@@ -59,6 +59,17 @@ const bridgeLogSchema = new mongoose.Schema({
 
 const BridgeLog = mongoose.model('BridgeLog', bridgeLogSchema);
 
+const dataUsageSchema = new mongoose.Schema({
+    room_id: { type: String, required: true },
+    sender: { type: String },
+    payloadType: { type: String, default: 'unknown' },
+    bytes: { type: Number, default: 0 },
+    readableSize: { type: String, default: '0 B' },
+    createdAt: { type: Date, default: Date.now }
+});
+
+const DataUsage = mongoose.model('DataUsage', dataUsageSchema);
+
 const offlineMessageSchema = new mongoose.Schema({
     room_id: { type: String, required: true },
     payload: { type: mongoose.Schema.Types.Mixed, required: true },
@@ -147,7 +158,27 @@ function findRoomClientByClientId(roomId, clientId) {
     return null;
 }
 
+function formatBytes(bytes) {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) {
+        return '0 B';
+    }
+    if (bytes < 1024) {
+        return `${bytes} B`;
+    }
+    if (bytes < 1024 * 1024) {
+        return `${(bytes / 1024).toFixed(2)} KB`;
+    }
+    if (bytes < 1024 * 1024 * 1024) {
+        return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 function calculateDataBytes(payload) {
+    if (!payload) {
+        return 0;
+    }
+
     if (payload.type === 'FETCH_RESPONSE' && payload.response) {
         const res = payload.response;
         if (res.bodyBase64) {
@@ -157,10 +188,16 @@ function calculateDataBytes(payload) {
             return Buffer.byteLength(res.bodyText, 'utf8');
         }
     }
+
     if (payload.type === 'FETCH_REQUEST' && payload.request && payload.request.bodyBase64) {
         return Math.floor((payload.request.bodyBase64.length * 3) / 4);
     }
-    return 0;
+
+    try {
+        return Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    } catch (error) {
+        return 0;
+    }
 }
 
 async function persistPendingMessage(roomId, payload, requesterClientId, senderRole) {
@@ -329,6 +366,7 @@ wss.on('connection', (ws) => {
         if (mongoose.connection.readyState === 1) {
             try {
                 const dataBytes = calculateDataBytes(payload);
+                const readableSize = formatBytes(dataBytes);
                 const isPersistedMessage = payload.type !== 'bridge:join' && payload.type !== 'bridge:role' && payload.type !== 'bridge:role-ack' && payload.type !== 'bridge:joined' && payload.type !== 'bridge:error' && payload.type !== 'SYNC_RESPONSE' && payload.type !== 'SYNC_REQUEST' && payload.type !== 'SYNC_PULL';
                 const newLog = new BridgeLog({
                     room_id: ws.roomKey,
@@ -338,8 +376,17 @@ wss.on('connection', (ws) => {
                     unread: isPersistedMessage
                 });
                 await newLog.save();
+
+                const dataUsageEntry = new DataUsage({
+                    room_id: ws.roomKey,
+                    sender: 'mobile_device',
+                    payloadType: payload.type || 'unknown',
+                    bytes: dataBytes,
+                    readableSize
+                });
+                await dataUsageEntry.save();
             } catch (error) {
-                console.error(`⚠️ Failed to save BridgeLog: ${error.message}`);
+                console.error(`⚠️ Failed to save BridgeLog or DataUsage: ${error.message}`);
             }
         } else {
             console.warn('MongoDB not connected. Skipping BridgeLog save.');
