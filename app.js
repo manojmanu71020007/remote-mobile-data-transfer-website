@@ -11,7 +11,14 @@ let deviceRole = isLikelyMobileDevice ? 'provider' : 'receiver';
 const FALLBACK_IP = "10.98.169.218"; // Your laptop's hotspot IP
 const BRIDGE_KEY_STORAGE = 'data-bridge-room-id';
 const PROXY_STATE_STORAGE = 'data-bridge-proxy-enabled';
+const OFFLINE_QUEUE_STORAGE = 'data-bridge-offline-queue';
+const RECONNECT_ATTEMPTS_STORAGE = 'data-bridge-reconnect-attempts';
 let displayRequestId = null;
+let reconnectTimeout = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const INITIAL_RECONNECT_DELAY = 2000; // 2 seconds
+const MAX_RECONNECT_DELAY = 30000; // 30 seconds
 const STUN_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
@@ -482,6 +489,73 @@ function storeBridgeRoomId(roomId) {
     }
 }
 
+// Offline queue management for persistent storage
+function getOfflineQueue() {
+    try {
+        const stored = window.localStorage.getItem(OFFLINE_QUEUE_STORAGE);
+        return stored ? JSON.parse(stored) : [];
+    } catch (error) {
+        console.error("Failed to retrieve offline queue:", error);
+        return [];
+    }
+}
+
+function saveOfflineQueue(offlineQueue) {
+    try {
+        window.localStorage.setItem(OFFLINE_QUEUE_STORAGE, JSON.stringify(offlineQueue));
+    } catch (error) {
+        console.error("Failed to save offline queue:", error);
+    }
+}
+
+function addToOfflineQueue(eventType, eventData) {
+    const offlineQueue = getOfflineQueue();
+    offlineQueue.push({
+        type: eventType,
+        data: eventData,
+        timestamp: Date.now(),
+        clientId: clientId,
+        roomId: bridgeRoomId
+    });
+    saveOfflineQueue(offlineQueue);
+    logSocket(`📦 Queued offline (${offlineQueue.length} items): ${eventType}`);
+    updateOfflineQueueStatus();
+    return offlineQueue.length;
+}
+
+function flushOfflineQueue() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        logSocket("⚠️ Cannot flush queue - socket not connected");
+        return;
+    }
+
+    const offlineQueue = getOfflineQueue();
+    if (offlineQueue.length === 0) {
+        logSocket("✅ Offline queue is empty");
+        return;
+    }
+
+    logSocket(`📤 Flushing ${offlineQueue.length} queued items...`);
+    let successCount = 0;
+    
+    offlineQueue.forEach((item, index) => {
+        try {
+            setTimeout(() => {
+                sendSocketEvent(item.type, item.data);
+                successCount++;
+            }, index * 100); // Stagger sends to avoid overwhelming server
+        } catch (error) {
+            console.error(`Failed to send queued item ${index}:`, error);
+        }
+    });
+
+    setTimeout(() => {
+        window.localStorage.removeItem(OFFLINE_QUEUE_STORAGE);
+        updateOfflineQueueStatus();
+        logSocket(`✅ Flushed ${successCount}/${offlineQueue.length} items`);
+    }, offlineQueue.length * 100 + 500);
+}
+
 function syncBridgeStatus(message) {
     const statusLabel = document.getElementById('socketConfigStatus');
     if (statusLabel) {
@@ -499,17 +573,23 @@ function setBridgeConnectionState(state, roomId = '') {
 }
 
 function sendSocketEvent(type, payload = {}) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-        return;
-    }
-
-    socket.send(JSON.stringify({
+    const message = {
         type,
         clientId,
         roomId: bridgeRoomId,
         timestamp: new Date().toISOString(),
         ...payload
-    }));
+    };
+
+    // If socket is not connected, queue the message for later delivery
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        if (type !== 'bridge:join') { // Don't queue join events
+            addToOfflineQueue(type, payload);
+        }
+        return;
+    }
+
+    socket.send(JSON.stringify(message));
 }
 
 function applyQueueAdd(item, sourceLabel) {
@@ -564,6 +644,10 @@ window.addEventListener('DOMContentLoaded', () => {
     renderBridgeShareInfo();
     renderQueue();
     updateNetworkStatus();
+    updateOfflineQueueStatus();
+    
+    // Update offline queue status every 5 seconds
+    setInterval(updateOfflineQueueStatus, 5000);
 });
 
 function registerServiceWorker() {
@@ -713,6 +797,10 @@ function setupEventListeners() {
     }
     if (disconnectBtn) {
         disconnectBtn.onclick = disconnectSocket;
+    }
+    const flushOfflineQueueBtn = document.getElementById('flushOfflineQueueBtn');
+    if (flushOfflineQueueBtn) {
+        flushOfflineQueueBtn.onclick = flushOfflineQueue;
     }
     if (seedSocketBtn) {
         seedSocketBtn.onclick = () => {
@@ -921,7 +1009,7 @@ function fallbackCopy(text) {
     }
 }
 
-// 7. WebSocket Connection
+// 7. WebSocket Connection with Auto-Reconnect & Offline Queue
 async function connectToSocket(url) {
     console.log(`Attempting to connect to ${url}`);
     const roomId = getBridgeRoomId();
@@ -937,6 +1025,7 @@ async function connectToSocket(url) {
     setBridgeConnectionState('Bridge: connecting', roomId);
     renderBridgeShareInfo();
     logSocket(`Connecting to ${url} with bridge room ${roomId}...`);
+    reconnectAttempts = 0;
     
     socket = new WebSocket(url);
     
@@ -946,6 +1035,7 @@ async function connectToSocket(url) {
         document.getElementById('socketState').innerText = "open";
         setBridgeConnectionState('Bridge: connected', bridgeRoomId);
         logSocket(`✅ Connected to bridge room ${bridgeRoomId}`);
+        reconnectAttempts = 0; // Reset on successful connection
 
         sendSocketEvent('bridge:join', { roomId: bridgeRoomId });
         sendRoleStateToServer();
@@ -954,6 +1044,9 @@ async function connectToSocket(url) {
         queue.forEach(item => {
             sendSocketEvent('queue:add', { item });
         });
+
+        // Flush offline queue when reconnected
+        flushOfflineQueue();
     };
     
     socket.onmessage = async (event) => {
@@ -1021,10 +1114,38 @@ async function connectToSocket(url) {
         document.getElementById('bridgeStatus').innerText = "Disconnected";
         document.getElementById('socketState').innerText = "closed";
         logSocket("Connection closed");
+        scheduleReconnect(url);
     };
 }
 
+function scheduleReconnect(url) {
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        logSocket(`❌ Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Offline mode active.`);
+        return;
+    }
+
+    reconnectAttempts++;
+    const delay = Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+    logSocket(`⏳ Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+    
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+    }
+    
+    reconnectTimeout = setTimeout(() => {
+        if (!socket || socket.readyState === WebSocket.CLOSED) {
+            logSocket(`🔄 Attempting to reconnect...`);
+            connectToSocket(url);
+        }
+    }, delay);
+}
+
 function disconnectSocket() {
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
+    
     if (socket) {
         socket.close();
         socket = null;
@@ -1061,7 +1182,22 @@ function updateNetworkStatus() {
     }
 }
 
-// 10. Utility function
+// 10. Offline queue status
+function updateOfflineQueueStatus() {
+    const offlineQueue = getOfflineQueue();
+    const statusElement = document.getElementById('offlineQueueStatus');
+    if (statusElement) {
+        if (offlineQueue.length === 0) {
+            statusElement.textContent = '📦 Offline queue: 0 items';
+            statusElement.style.color = 'inherit';
+        } else {
+            statusElement.textContent = `📦 Offline queue: ${offlineQueue.length} items`;
+            statusElement.style.color = '#ff6b6b';
+        }
+    }
+}
+
+// 11. Utility function
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
