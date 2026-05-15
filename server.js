@@ -64,6 +64,7 @@ const offlineMessageSchema = new mongoose.Schema({
     payload: { type: mongoose.Schema.Types.Mixed, required: true },
     requesterClientId: { type: String, default: null },
     sender: { type: String, default: 'mobile_device' },
+    status: { type: String, default: 'pending' },
     createdAt: { type: Date, default: Date.now }
 });
 
@@ -162,7 +163,25 @@ function calculateDataBytes(payload) {
     return 0;
 }
 
-async function handleSyncRequest(ws) {
+async function persistPendingMessage(roomId, payload, requesterClientId, senderRole) {
+    if (mongoose.connection.readyState !== 1) {
+        return;
+    }
+
+    try {
+        await OfflineMessage.create({
+            room_id: roomId,
+            payload,
+            requesterClientId: requesterClientId || (payload.requesterClientId || payload.clientId || null),
+            sender: senderRole || payload.sender || 'mobile_device',
+            status: 'pending'
+        });
+    } catch (error) {
+        console.error(`⚠️ Failed to persist pending message: ${error.message}`);
+    }
+}
+
+async function handleSyncPull(ws) {
     if (mongoose.connection.readyState !== 1) {
         sendJson(ws, {
             type: 'SYNC_RESPONSE',
@@ -174,8 +193,8 @@ async function handleSyncRequest(ws) {
     }
 
     try {
-        const offlineItems = await OfflineMessage.find({ room_id: ws.roomId }).sort({ createdAt: 1 }).lean();
-        if (offlineItems.length === 0) {
+        const pendingItems = await OfflineMessage.find({ room_id: ws.roomId, status: 'pending' }).sort({ createdAt: 1 }).lean();
+        if (pendingItems.length === 0) {
             sendJson(ws, {
                 type: 'SYNC_RESPONSE',
                 items: [],
@@ -186,7 +205,7 @@ async function handleSyncRequest(ws) {
 
         sendJson(ws, {
             type: 'SYNC_RESPONSE',
-            items: offlineItems.map(item => ({
+            items: pendingItems.map(item => ({
                 ...item,
                 _id: undefined,
                 room_id: undefined
@@ -194,10 +213,14 @@ async function handleSyncRequest(ws) {
             timestamp: new Date().toISOString()
         });
 
-        await OfflineMessage.deleteMany({ _id: { $in: offlineItems.map((item) => item._id) } });
-        console.log(`Sent ${offlineItems.length} offline message(s) from MongoDB to ${ws.clientId} in room ${ws.roomId} and deleted them.`);
+        await OfflineMessage.deleteMany({ _id: { $in: pendingItems.map((item) => item._id) } });
+        if (ws.role === 'receiver') {
+            console.log(`[Server] ${pendingItems.length} messages recovered from database for Laptop.`);
+        } else {
+            console.log(`Sent ${pendingItems.length} pending message(s) from MongoDB to ${ws.clientId} in room ${ws.roomId}.`);
+        }
     } catch (error) {
-        console.error(`⚠️ Failed to service SYNC_REQUEST: ${error.message}`);
+        console.error(`⚠️ Failed to service SYNC_PULL: ${error.message}`);
         sendJson(ws, {
             type: 'SYNC_RESPONSE',
             items: [],
@@ -298,15 +321,15 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        if (payload.type === 'SYNC_REQUEST') {
-            await handleSyncRequest(ws);
+        if (payload.type === 'SYNC_REQUEST' || payload.type === 'SYNC_PULL') {
+            await handleSyncPull(ws);
             return;
         }
 
         if (mongoose.connection.readyState === 1) {
             try {
                 const dataBytes = calculateDataBytes(payload);
-                const isPersistedMessage = payload.type !== 'bridge:join' && payload.type !== 'bridge:role' && payload.type !== 'bridge:role-ack' && payload.type !== 'bridge:joined' && payload.type !== 'bridge:error' && payload.type !== 'SYNC_RESPONSE' && payload.type !== 'SYNC_REQUEST';
+                const isPersistedMessage = payload.type !== 'bridge:join' && payload.type !== 'bridge:role' && payload.type !== 'bridge:role-ack' && payload.type !== 'bridge:joined' && payload.type !== 'bridge:error' && payload.type !== 'SYNC_RESPONSE' && payload.type !== 'SYNC_REQUEST' && payload.type !== 'SYNC_PULL';
                 const newLog = new BridgeLog({
                     room_id: ws.roomKey,
                     sender: 'mobile_device',
@@ -325,20 +348,16 @@ wss.on('connection', (ws) => {
         if (payload.type === 'FETCH_REQUEST') {
             const provider = findRoomClientByRole(ws.roomId, 'provider');
             if (!provider) {
-                console.log(`No provider found in room ${ws.roomId}. Available clients:`, Array.from(clientsByRoom.get(ws.roomId) || []).map(c => ({ id: c.clientId, role: c.role, state: c.readyState })));
-                sendJson(ws, {
-                    type: 'FETCH_RESPONSE',
-                    requestId: payload.requestId,
-                    requesterClientId: payload.requesterClientId || ws.clientId || payload.clientId || null,
-                    response: {
-                        ok: false,
-                        status: 503,
-                        statusText: 'No provider available',
-                        headers: { 'content-type': 'text/plain' },
-                        bodyText: 'No provider device is available in this room.'
-                    }
-                });
-                console.warn(`No provider found in room ${ws.roomId} for FETCH_REQUEST.`);
+                console.log(`No provider found in room ${ws.roomId}. Persisting pending FETCH_REQUEST.`);
+                if (mongoose.connection.readyState === 1) {
+                    await OfflineMessage.create({
+                        room_id: ws.roomId,
+                        payload,
+                        requesterClientId: payload.requesterClientId || ws.clientId || payload.clientId || null,
+                        sender: ws.role || 'mobile_device',
+                        status: 'pending'
+                    });
+                }
                 return;
             }
 
@@ -358,37 +377,25 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            const receiver = findRoomClientByRole(ws.roomId, 'receiver');
-            if (!receiver) {
-                if (mongoose.connection.readyState === 1) {
-                    try {
-                        const offlineDoc = new OfflineMessage({
-                            room_id: ws.roomId,
-                            payload: message,
-                            requesterClientId,
-                            sender: ws.role || 'mobile_device'
-                        });
-                        await offlineDoc.save();
-                        console.log(`Saved offline message for room ${ws.roomId} (receiver offline).`);
-                    } catch (err) {
-                        console.error(`⚠️ Failed to save offline message: ${err.message}`);
-                    }
-                } else {
-                    console.warn('MongoDB not connected. Cannot persist offline message.');
-                }
-                return;
-            }
-
-            console.warn(`No requester found for FETCH_RESPONSE in room ${ws.roomId}; broadcasting to room.`);
+            console.log(`No requester found for FETCH_RESPONSE in room ${ws.roomId}. Persisting pending response.`);
+            await persistPendingMessage(ws.roomId, payload, requesterClientId, ws.role);
+            return;
         }
 
-        // Broadcast only within the joined room.
-        getRoomClients(ws.roomId).forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(message);
-            }
+        const roomClients = getRoomClients(ws.roomId);
+        const otherClients = Array.from(roomClients).filter((client) => client !== ws && client.readyState === WebSocket.OPEN);
+        const excludedControlTypes = ['bridge:join', 'bridge:role', 'bridge:role-ack', 'bridge:joined', 'bridge:error', 'SYNC_RESPONSE', 'SYNC_REQUEST', 'SYNC_PULL'];
+
+        if (otherClients.length === 0 && !excludedControlTypes.includes(payload.type)) {
+            console.log(`No target available in room ${ws.roomId}; persisting pending payload of type ${payload.type}.`);
+            await persistPendingMessage(ws.roomId, payload, payload.requesterClientId || ws.clientId, ws.role);
+            return;
+        }
+
+        otherClients.forEach((client) => {
+            client.send(message);
         });
-        console.log(`Broadcasting to room ${ws.roomId} (${getRoomClients(ws.roomId).size} clients).`);
+        console.log(`Broadcasting to room ${ws.roomId} (${otherClients.length} remote clients).`);
     });
 
     ws.on('close', () => {

@@ -1075,12 +1075,12 @@ async function connectToSocket(url) {
 
         // Request unread sync items from server
         if (deviceRole === 'receiver') {
-            sendSocketEvent('SYNC_REQUEST', {
+            sendSocketEvent('SYNC_PULL', {
                 requesterClientId: clientId,
                 sender: deviceRole,
                 targetRole: 'provider'
             });
-            logSocket('📡 Sent SYNC_REQUEST to server');
+            logSocket('📡 Sent SYNC_PULL to server');
         }
     };
     
@@ -1134,11 +1134,16 @@ async function connectToSocket(url) {
 
             if (data.type === 'SYNC_RESPONSE') {
                 const items = Array.isArray(data.items) ? data.items : [];
-                logSocket(`✅ SYNC_RESPONSE received ${items.length} unread item(s)`);
+                logSocket(`✅ SYNC_RESPONSE received ${items.length} recovered item(s)`);
                 items.forEach((item, index) => {
                     const payload = item.payload || {};
                     if (payload.type === 'queue:add' && payload.item) {
                         applyQueueAdd(payload.item, 'sync');
+                    } else if (payload.type === 'FETCH_REQUEST' && deviceRole === 'provider') {
+                        logSocket(`🔄 Recovered FETCH_REQUEST: ${payload.request?.url}`);
+                        handleProviderFetchRequest(payload).catch((err) => {
+                            console.error('Provider recovered fetch failed:', err);
+                        });
                     } else {
                         logSocket(`🔄 Synced item ${index + 1}: ${JSON.stringify(payload).slice(0, 120)}`);
                     }
