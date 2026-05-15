@@ -61,6 +61,7 @@ const BridgeLog = mongoose.model('BridgeLog', bridgeLogSchema);
 
 const dataUsageSchema = new mongoose.Schema({
     roomId: { type: String, required: true },
+    bytes: { type: Number, required: true },
     kb: { type: Number, required: true },
     timestamp: { type: Date, default: Date.now }
 });
@@ -391,6 +392,7 @@ wss.on('connection', (ws) => {
         if (mongoose.connection.readyState === 1) {
             try {
                 const dataBytes = calculateDataBytes(payload);
+                console.log('Attempting to save to MongoDB:', dataBytes);
                 const readableSize = formatBytes(dataBytes);
                 const isPersistedMessage = payload.type !== 'bridge:join' && payload.type !== 'bridge:role' && payload.type !== 'bridge:role-ack' && payload.type !== 'bridge:joined' && payload.type !== 'bridge:error' && payload.type !== 'SYNC_RESPONSE' && payload.type !== 'SYNC_REQUEST' && payload.type !== 'SYNC_PULL';
                 const newLog = new BridgeLog({
@@ -404,15 +406,17 @@ wss.on('connection', (ws) => {
 
                 const dataUsageEntry = new DataUsage({
                     roomId: ws.roomKey,
+                    bytes: dataBytes,
                     kb: dataBytes / 1024
                 });
                 await dataUsageEntry.save();
 
-                if (payload.type === 'queue:add' && ws.role === 'provider') {
+                if ((payload.type === 'queue:add' || payload.type === 'queue:flush') && ws.role === 'provider') {
                     const usageEvent = {
                         type: 'DATA_USAGE',
                         roomId: ws.roomId,
                         bytes: dataBytes,
+                        kb: dataBytes / 1024,
                         timestamp: new Date().toISOString()
                     };
                     const roomClients = getRoomClients(ws.roomId);

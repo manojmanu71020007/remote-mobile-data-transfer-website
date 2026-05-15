@@ -98,7 +98,11 @@ function formatKilobytes(bytes) {
     if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) {
         return '0 KB';
     }
-    return `${(bytes / 1024).toFixed(2)} KB`;
+    const value = bytes / 1024;
+    if (value > 0 && value < 0.01) {
+        return '0.01 KB';
+    }
+    return `${value.toFixed(2)} KB`;
 }
 
 function updateTotalDataTransferredUI() {
@@ -759,9 +763,14 @@ function setupEventListeners() {
     if (flushBtn) {
         flushBtn.onclick = (e) => {
             e.preventDefault();
+            const itemsToFlush = [...queue];
+            if (itemsToFlush.length > 0) {
+                sendSocketEvent('queue:flush', { items: itemsToFlush });
+            } else {
+                sendSocketEvent('queue:flush');
+            }
             applyQueueFlush('local');
-            sendSocketEvent('queue:flush');
-            console.log("Queue flushed");
+            console.log(`Queue flushed (${itemsToFlush.length} items)`);
         };
     }
 
@@ -1160,7 +1169,12 @@ async function connectToSocket(url) {
             }
 
             if (data.type === 'queue:flush') {
-                applyQueueFlush('remote');
+                if (Array.isArray(data.items) && data.items.length > 0) {
+                    data.items.forEach((item) => applyQueueAdd(item, 'remote'));
+                    logSocket(`✅ Received ${data.items.length} queued item(s) from remote flush`);
+                } else {
+                    applyQueueFlush('remote');
+                }
                 return;
             }
 
