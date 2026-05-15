@@ -6,6 +6,10 @@ let clientId = null;
 let bridgeRoomId = '';
 let proxyEnabled = false;
 let serviceWorkerRegistration = null;
+let lastSocketUrl = null;
+let reconnectTimeout = null;
+let reconnectAttempts = 0;
+let reconnectInProgress = false;
 const isLikelyMobileDevice = window.matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
 let deviceRole = isLikelyMobileDevice ? 'provider' : 'receiver';
 const FALLBACK_IP = "10.98.169.218"; // Your laptop's hotspot IP
@@ -14,8 +18,6 @@ const PROXY_STATE_STORAGE = 'data-bridge-proxy-enabled';
 const OFFLINE_QUEUE_STORAGE = 'data-bridge-offline-queue';
 const RECONNECT_ATTEMPTS_STORAGE = 'data-bridge-reconnect-attempts';
 let displayRequestId = null;
-let reconnectTimeout = null;
-let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const INITIAL_RECONNECT_DELAY = 2000; // 2 seconds
 const MAX_RECONNECT_DELAY = 30000; // 30 seconds
@@ -588,6 +590,11 @@ function sendSocketEvent(type, payload = {}) {
         if (type !== 'bridge:join') { // Don't queue join events
             addToOfflineQueue(type, payload);
         }
+
+        if (navigator.onLine && lastSocketUrl) {
+            tryAutoReconnect();
+        }
+
         return;
     }
 
@@ -648,6 +655,19 @@ window.addEventListener('DOMContentLoaded', () => {
     updateNetworkStatus();
     updateOfflineQueueStatus();
     
+    window.addEventListener('online', () => {
+        logSocket('🔌 Network returned: attempting reconnect if needed');
+        updateNetworkStatus();
+        if (!socket || socket.readyState === WebSocket.CLOSED) {
+            tryAutoReconnect();
+        }
+    });
+
+    window.addEventListener('offline', () => {
+        logSocket('📴 Network offline. Offline queue will persist until reconnect.');
+        updateNetworkStatus();
+    });
+
     // Update offline queue status every 5 seconds
     setInterval(updateOfflineQueueStatus, 5000);
 });
@@ -1028,6 +1048,8 @@ async function connectToSocket(url) {
     renderBridgeShareInfo();
     logSocket(`Connecting to ${url} with bridge room ${roomId}...`);
     reconnectAttempts = 0;
+    lastSocketUrl = url;
+    reconnectInProgress = false;
     
     socket = new WebSocket(url);
     
@@ -1038,6 +1060,7 @@ async function connectToSocket(url) {
         setBridgeConnectionState('Bridge: connected', bridgeRoomId);
         logSocket(`✅ Connected to bridge room ${bridgeRoomId}`);
         reconnectAttempts = 0; // Reset on successful connection
+        reconnectInProgress = false;
 
         sendSocketEvent('bridge:join', { roomId: bridgeRoomId });
         sendRoleStateToServer();
@@ -1124,9 +1147,15 @@ async function connectToSocket(url) {
 function scheduleReconnect(url) {
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
         logSocket(`❌ Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Offline mode active.`);
+        reconnectInProgress = false;
         return;
     }
 
+    if (reconnectInProgress) {
+        return;
+    }
+
+    reconnectInProgress = true;
     reconnectAttempts++;
     const delay = Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
     logSocket(`⏳ Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
@@ -1136,11 +1165,30 @@ function scheduleReconnect(url) {
     }
     
     reconnectTimeout = setTimeout(() => {
+        reconnectInProgress = false;
         if (!socket || socket.readyState === WebSocket.CLOSED) {
             logSocket(`🔄 Attempting to reconnect...`);
             connectToSocket(url);
         }
     }, delay);
+}
+
+function tryAutoReconnect() {
+    if (!navigator.onLine) {
+        return;
+    }
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        return;
+    }
+
+    if (!lastSocketUrl) {
+        logSocket('⚠️ No socket URL available for reconnect. Please connect manually.');
+        return;
+    }
+
+    logSocket('🔄 Auto-reconnect triggered by network restore.');
+    connectToSocket(lastSocketUrl);
 }
 
 function disconnectSocket() {
