@@ -187,6 +187,8 @@ async function getTotalDataTransferredKB(roomId) {
         return 0;
     }
 }
+
+function calculateDataBytes(payload) {
     if (!payload) {
         return 0;
     }
