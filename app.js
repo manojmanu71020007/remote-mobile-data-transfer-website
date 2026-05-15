@@ -1072,6 +1072,16 @@ async function connectToSocket(url) {
 
         // Flush offline queue when reconnected
         flushOfflineQueue();
+
+        // Request unread sync items from server
+        if (deviceRole === 'receiver') {
+            sendSocketEvent('SYNC_REQUEST', {
+                requesterClientId: clientId,
+                sender: deviceRole,
+                targetRole: 'provider'
+            });
+            logSocket('📡 Sent SYNC_REQUEST to server');
+        }
     };
     
     socket.onmessage = async (event) => {
@@ -1119,6 +1129,20 @@ async function connectToSocket(url) {
 
             if (data.type === 'queue:flush') {
                 applyQueueFlush('remote');
+                return;
+            }
+
+            if (data.type === 'SYNC_RESPONSE') {
+                const items = Array.isArray(data.items) ? data.items : [];
+                logSocket(`✅ SYNC_RESPONSE received ${items.length} unread item(s)`);
+                items.forEach((item, index) => {
+                    const payload = item.payload || {};
+                    if (payload.type === 'queue:add' && payload.item) {
+                        applyQueueAdd(payload.item, 'sync');
+                    } else {
+                        logSocket(`🔄 Synced item ${index + 1}: ${JSON.stringify(payload).slice(0, 120)}`);
+                    }
+                });
                 return;
             }
 

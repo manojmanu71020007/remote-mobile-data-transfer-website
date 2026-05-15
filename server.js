@@ -52,6 +52,8 @@ const bridgeLogSchema = new mongoose.Schema({
     sender: { type: String },
     payload: { type: mongoose.Schema.Types.Mixed },
     dataBytes: { type: Number, default: 0 },
+    unread: { type: Boolean, default: true },
+    deliveredAt: { type: Date, default: null },
     timestamp: { type: Date, default: Date.now }
 });
 
@@ -150,6 +152,50 @@ function calculateDataBytes(payload) {
     return 0;
 }
 
+async function handleSyncRequest(ws) {
+    if (mongoose.connection.readyState !== 1) {
+        sendJson(ws, {
+            type: 'SYNC_RESPONSE',
+            items: [],
+            error: 'MongoDB unavailable',
+            timestamp: new Date().toISOString()
+        });
+        return;
+    }
+
+    try {
+        const unreadItems = await BridgeLog.find({ room_id: ws.roomId, unread: true }).sort({ timestamp: 1 }).lean();
+        if (unreadItems.length === 0) {
+            sendJson(ws, {
+                type: 'SYNC_RESPONSE',
+                items: [],
+                timestamp: new Date().toISOString()
+            });
+            return;
+        }
+
+        sendJson(ws, {
+            type: 'SYNC_RESPONSE',
+            items: unreadItems,
+            timestamp: new Date().toISOString()
+        });
+
+        await BridgeLog.updateMany(
+            { _id: { $in: unreadItems.map((item) => item._id) } },
+            { $set: { unread: false, deliveredAt: new Date() } }
+        );
+        console.log(`Sent ${unreadItems.length} unread item(s) from MongoDB to ${ws.clientId} in room ${ws.roomId}.`);
+    } catch (error) {
+        console.error(`⚠️ Failed to service SYNC_REQUEST: ${error.message}`);
+        sendJson(ws, {
+            type: 'SYNC_RESPONSE',
+            items: [],
+            error: 'Sync failed',
+            timestamp: new Date().toISOString()
+        });
+    }
+}
+
 // Helper to find your IP automatically
 const interfaces = os.networkInterfaces();
 console.log("--- Server Starting ---");
@@ -241,14 +287,21 @@ wss.on('connection', (ws) => {
             return;
         }
 
+        if (payload.type === 'SYNC_REQUEST') {
+            await handleSyncRequest(ws);
+            return;
+        }
+
         if (mongoose.connection.readyState === 1) {
             try {
                 const dataBytes = calculateDataBytes(payload);
+                const isPersistedMessage = payload.type !== 'bridge:join' && payload.type !== 'bridge:role' && payload.type !== 'bridge:role-ack' && payload.type !== 'bridge:joined' && payload.type !== 'bridge:error' && payload.type !== 'SYNC_RESPONSE' && payload.type !== 'SYNC_REQUEST';
                 const newLog = new BridgeLog({
                     room_id: ws.roomKey,
                     sender: 'mobile_device',
                     payload,
-                    dataBytes
+                    dataBytes,
+                    unread: isPersistedMessage
                 });
                 await newLog.save();
             } catch (error) {
