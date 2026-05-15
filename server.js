@@ -404,11 +404,17 @@ wss.on('connection', (ws) => {
                 });
                 await newLog.save();
 
-                const dataUsageEntry = new DataUsage({
+                const dataToSave = {
                     roomId: ws.roomKey,
                     bytes: dataBytes,
-                    kb: dataBytes / 1024
-                });
+                    kb: dataBytes / 1024,
+                    payloadType: payload.type,
+                    hasItems: Array.isArray(payload.items),
+                    itemCount: Array.isArray(payload.items) ? payload.items.length : 0
+                };
+                console.log('Final data to be saved:', dataToSave);
+
+                const dataUsageEntry = new DataUsage(dataToSave);
                 await dataUsageEntry.save();
 
                 if ((payload.type === 'queue:add' || payload.type === 'queue:flush') && ws.role === 'provider') {
